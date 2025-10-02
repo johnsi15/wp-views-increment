@@ -1,9 +1,12 @@
 <?php
 /**
  * Plugin Name: WPB Views Increment
+ * Plugin URI: https://github.com/johnsi15/wp-views-increment
  * Description: Sistema completo de contador de vistas con REST API, buffering y protección anti-spam
  * Version: 1.2.0
  * Author: John Serrano
+ * Author URI: https://johnserrano.co
+ * License: MIT
  */
 
 // Prevenir acceso directo
