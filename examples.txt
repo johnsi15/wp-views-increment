@@ -1,0 +1,331 @@
+# ============================================
+# QUERIES GRAPHQL - WPB VIEWS COUNTER PRO
+# ============================================
+
+# --------------------------------------------
+# 1. TRENDING POSTS (Recomendado)
+# Posts "hot" basados en vistas recientes
+# Ideal para sidebar "Lo más leído esta semana"
+# --------------------------------------------
+
+query GetTrendingPosts {
+  trendingPosts(first: 10) {
+    nodes {
+      id
+      databaseId
+      title
+      excerpt
+      date
+      uri
+      headlessUri
+      viewCount
+      trendingScore
+      viewStats {
+        views_1d
+        views_7d
+        views_30d
+        views_total
+      }
+      featuredImage {
+        node {
+          sourceUrl
+          altText
+        }
+      }
+      author {
+        node {
+          name
+          avatar {
+            url
+          }
+        }
+      }
+      categories {
+        nodes {
+          name
+          slug
+        }
+      }
+    }
+  }
+}
+
+# --------------------------------------------
+# 2. POPULAR POSTS (Histórico)
+# Posts más vistos de todos los tiempos
+# Útil para "Artículos clásicos"
+# --------------------------------------------
+
+query GetPopularPosts {
+  popularPosts(first: 10) {
+    nodes {
+      id
+      databaseId
+      title
+      excerpt
+      date
+      uri
+      headlessUri
+      viewCount
+      trendingScore
+      featuredImage {
+        node {
+          sourceUrl
+          altText
+        }
+      }
+    }
+  }
+}
+
+# --------------------------------------------
+# 3. TRENDING POSTS CON FILTROS
+# Trending posts de una categoría específica
+# --------------------------------------------
+
+query GetTrendingPostsByCategory {
+  trendingPosts(
+    first: 10
+    where: {
+      categoryName: "deportes"
+      orderby: { field: META_VALUE_NUM, order: DESC }
+    }
+  ) {
+    nodes {
+      id
+      title
+      viewCount
+      trendingScore
+      viewStats {
+        views_7d
+      }
+    }
+  }
+}
+
+# --------------------------------------------
+# 4. POST INDIVIDUAL CON STATS
+# Obtener un post con todas sus estadísticas
+# --------------------------------------------
+
+query GetPostWithStats($id: ID!) {
+  post(id: $id, idType: DATABASE_ID) {
+    id
+    title
+    content
+    date
+    uri
+    headlessUri
+    viewCount
+    trendingScore
+    viewStats {
+      views_1d
+      views_7d
+      views_30d
+      views_total
+    }
+    featuredImage {
+      node {
+        sourceUrl
+      }
+    }
+  }
+}
+
+# Variables:
+# {
+#   "id": 123
+# }
+
+# --------------------------------------------
+# 5. TRENDING POSTS CON PAGINACIÓN
+# Para cargar más posts con "load more"
+# --------------------------------------------
+
+query GetTrendingPostsPaginated($first: Int!, $after: String) {
+  trendingPosts(first: $first, after: $after) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    edges {
+      cursor
+      node {
+        id
+        title
+        excerpt
+        headlessUri
+        viewCount
+        trendingScore
+      }
+    }
+  }
+}
+
+# Primera carga:
+# { "first": 10 }
+#
+# Cargar más (usar endCursor de la respuesta anterior):
+# { "first": 10, "after": "YXJyYXljb25uZWN0aW9uOjk=" }
+
+# --------------------------------------------
+# 6. TOP 5 TRENDING POR CATEGORÍA
+# Para widgets de "Lo más leído" por sección
+# --------------------------------------------
+
+query GetTrendingBySections {
+  deportes: trendingPosts(first: 5, where: { categoryName: "deportes" }) {
+    nodes {
+      id
+      title
+      headlessUri
+      viewStats {
+        views_7d
+      }
+    }
+  }
+  
+  politica: trendingPosts(first: 5, where: { categoryName: "politica" }) {
+    nodes {
+      id
+      title
+      headlessUri
+      viewStats {
+        views_7d
+      }
+    }
+  }
+  
+  economia: trendingPosts(first: 5, where: { categoryName: "economia" }) {
+    nodes {
+      id
+      title
+      headlessUri
+      viewStats {
+        views_7d
+      }
+    }
+  }
+}
+
+# --------------------------------------------
+# 7. COMPARAR TRENDING VS POPULAR
+# Para análisis o dashboards
+# --------------------------------------------
+
+query GetTrendingVsPopular {
+  trending: trendingPosts(first: 5) {
+    nodes {
+      id
+      title
+      trendingScore
+      viewStats {
+        views_7d
+      }
+    }
+  }
+  
+  popular: popularPosts(first: 5) {
+    nodes {
+      id
+      title
+      viewCount
+    }
+  }
+}
+
+# --------------------------------------------
+# 8. ÚLTIMOS POSTS CON ESTADÍSTICAS
+# Posts recientes ordenados por fecha
+# pero incluyendo sus stats de vistas
+# --------------------------------------------
+
+query GetRecentPostsWithStats {
+  posts(first: 10, where: { orderby: { field: DATE, order: DESC } }) {
+    nodes {
+      id
+      title
+      date
+      headlessUri
+      viewCount
+      trendingScore
+      viewStats {
+        views_1d
+        views_7d
+      }
+    }
+  }
+}
+
+# --------------------------------------------
+# 9. BÚSQUEDA CON TRENDING SCORE
+# Búsqueda que incluye trending score
+# --------------------------------------------
+
+query SearchPostsWithTrending($search: String!) {
+  posts(first: 20, where: { search: $search }) {
+    nodes {
+      id
+      title
+      excerpt
+      headlessUri
+      viewCount
+      trendingScore
+      viewStats {
+        views_7d
+      }
+    }
+  }
+}
+
+# Variables:
+# { "search": "elecciones" }
+
+# --------------------------------------------
+# 10. SIDEBAR WIDGET COMPLETO
+# Query completa para un widget lateral
+# --------------------------------------------
+
+query GetSidebarData {
+  # Lo más leído esta semana
+  trending: trendingPosts(first: 5) {
+    nodes {
+      id
+      title
+      headlessUri
+      viewStats {
+        views_7d
+      }
+      featuredImage {
+        node {
+          sourceUrl(size: THUMBNAIL)
+        }
+      }
+    }
+  }
+  
+  # Clásicos más leídos
+  allTimePopular: popularPosts(first: 5) {
+    nodes {
+      id
+      title
+      headlessUri
+      viewCount
+      featuredImage {
+        node {
+          sourceUrl(size: THUMBNAIL)
+        }
+      }
+    }
+  }
+  
+  # Posts recientes
+  recent: posts(first: 5) {
+    nodes {
+      id
+      title
+      date
+      headlessUri
+    }
+  }
+}
