@@ -4,7 +4,6 @@
  * Agregar esto al functions.php de tu tema
  */
 
-// Solo registrar si WPGraphQL está activo
 if (class_exists('WPGraphQL')) {
     
   add_action('graphql_register_types', function() {
