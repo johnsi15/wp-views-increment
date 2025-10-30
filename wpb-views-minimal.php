@@ -77,7 +77,8 @@ class WPB_Views_Counter_Pro {
         // register_deactivation_hook(__FILE__, array($this, 'deactivate'));
         
         // Inicializar timestamp
-        $this->buffer_last_flush = get_option('wpb_views_last_flush', time());
+        // $this->buffer_last_flush = get_option('wpb_views_last_flush', time());
+        $this->buffer_last_flush = get_option('wpb_views_last_flush', current_time('timestamp'));
     }
     
     /**
@@ -249,7 +250,7 @@ class WPB_Views_Counter_Pro {
             
             <div class="notice notice-info">
                 <p><strong>Buffer Status:</strong> <?php echo $buffer_size; ?> items pending flush</p>
-                <p><strong>Last Flush:</strong> <?php echo date('Y-m-d H:i:s', $this->buffer_last_flush); ?></p>
+                <p><strong>Last Flush:</strong> <?php echo date_i18n('Y-m-d H:i:s', $this->buffer_last_flush); ?></p>
             </div>
             
             <form method="post" action="options.php">
@@ -719,7 +720,8 @@ class WPB_Views_Counter_Pro {
             
             delete_option(WPB_VIEWS_BUFFER_OPTION);
             $this->log("Buffer deleted. Checking: " . json_encode(get_option(WPB_VIEWS_BUFFER_OPTION, array())));
-            $this->buffer_last_flush = time();
+            // $this->buffer_last_flush = time();
+            $this->buffer_last_flush = current_time('timestamp');
             update_option('wpb_views_last_flush', $this->buffer_last_flush, false);
             
             return true;
