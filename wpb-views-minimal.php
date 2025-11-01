@@ -787,6 +787,8 @@ class WPB_Views_Counter_Pro {
                 FROM $table_name
                 WHERE view_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
                 GROUP BY post_id
+                ORDER BY views_30d DESC
+                LIMIT 200
             ");
             
             if ($wpdb->last_error) {
