@@ -785,7 +785,7 @@ class WPB_Views_Counter_Pro {
                     SUM(CASE WHEN view_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN view_count ELSE 0 END) as views_30d,
                     SUM(view_count) as views_total
                 FROM $table_name
-                WHERE view_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                WHERE view_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
                 GROUP BY post_id
                 ORDER BY views_30d DESC
                 LIMIT 200
