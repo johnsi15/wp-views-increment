@@ -781,14 +781,17 @@ class WPB_Views_Counter_Pro {
             $posts = $wpdb->get_results("
                 SELECT 
                     post_id,
+                    SUM(CASE WHEN view_date >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) THEN view_count ELSE 0 END) as views_1d,
                     SUM(CASE WHEN view_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN view_count ELSE 0 END) as views_7d,
                     SUM(CASE WHEN view_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN view_count ELSE 0 END) as views_30d,
-                    SUM(view_count) as views_total
+                    SUM(view_count) as views_total,
+                    SUM(view_count * POW(0.7, DATEDIFF(CURDATE(), view_date))) as decayed_score
                 FROM $table_name
-                WHERE view_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+                WHERE view_date >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
                 GROUP BY post_id
-                ORDER BY views_30d DESC
-                LIMIT 200
+                HAVING decayed_score > 0
+                ORDER BY decayed_score DESC
+                LIMIT 100
             ");
             
             if ($wpdb->last_error) {
@@ -799,12 +802,13 @@ class WPB_Views_Counter_Pro {
             $total_weight = 1 - $recent_weight;
             
             foreach ($posts as $post) {
-                $trending_score = 
-                    ($post->views_7d * 2) * $recent_weight +
-                    ($post->views_30d) * $recent_weight +
-                    ($post->views_total) * $total_weight;
-                
+                $trending_score = ($post->decayed_score * $recent_weight) + ($post->views_total * $total_weight);
                 update_post_meta($post->post_id, 'wpb_trending_score', $trending_score);
+                // Guardar stats por rangos (para GraphQL viewStats)
+                update_post_meta($post->post_id, 'wpb_views_1d', $post->views_1d);
+                update_post_meta($post->post_id, 'wpb_views_7d', $post->views_7d);
+                update_post_meta($post->post_id, 'wpb_views_30d', $post->views_30d);
+                update_post_meta($post->post_id, 'wpb_views_total', $post->views_total);
             }
             
             // Limpiar datos antiguos
