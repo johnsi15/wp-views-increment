@@ -777,19 +777,29 @@ class WPB_Views_Counter_Pro {
             }
             
             $this->log("Starting trending score calculation");
+
+            // PASO 1: LIMPIAR TODOS los trending scores existentes
+            // Esto es necesario porque posts viejos sin actividad reciente 
+            // pueden tener scores que nunca fueron limpiados
+            $deleted = $wpdb->query(
+                "DELETE FROM {$wpdb->postmeta} 
+                 WHERE meta_key IN ('wpb_trending_score', 'wpb_views_1d', 'wpb_views_7d', 'wpb_views_30d', 'wpb_views_total', 'wpb_recency_boost')"
+            );
+            $this->log("Cleaned ALL old trending data: $deleted rows deleted");
             
+            // PASO 2: Calcular nuevos scores SOLO para posts con actividad en los últimos 30 días
             $posts = $wpdb->get_results("
                 SELECT 
                     post_id,
                     SUM(CASE WHEN view_date >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) THEN view_count ELSE 0 END) as views_1d,
                     SUM(CASE WHEN view_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN view_count ELSE 0 END) as views_7d,
                     SUM(CASE WHEN view_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN view_count ELSE 0 END) as views_30d,
-                    SUM(view_count) as views_total,
+                    SUM(view_count) as views_in_table,
                     SUM(view_count * POW(0.7, DATEDIFF(CURDATE(), view_date))) as decayed_score
                 FROM $table_name
-                WHERE view_date >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
+                WHERE view_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
                 GROUP BY post_id
-                HAVING decayed_score > 0
+                HAVING views_in_table > 0
                 ORDER BY decayed_score DESC
                 LIMIT 100
             ");
@@ -798,20 +808,49 @@ class WPB_Views_Counter_Pro {
                 throw new Exception("Query error: " . $wpdb->last_error);
             }
             
+            $this->log("Found " . count($posts) . " posts with recent views");
+            
             $recent_weight = $this->get_setting('trending_weight');
             $total_weight = 1 - $recent_weight;
             
             foreach ($posts as $post) {
-                $trending_score = ($post->decayed_score * $recent_weight) + ($post->views_total * $total_weight);
+                // Obtener el total histórico desde postmeta
+                $views_total_historic = (int) get_post_meta($post->post_id, WPB_VIEWS_META_KEY, true) ?: 0;
+
+                // Obtener la fecha de publicación del post
+                $post_date = get_post_field('post_date', $post->post_id);
+                $days_since_published = $post_date ? 
+                    floor((current_time('timestamp') - strtotime($post_date)) / 86400) : 999;
+
+                // Boost por recencia de publicación
+                // Posts nuevos tienen FUERTE ventaja sobre posts "evergreen"
+                // Penalización para posts muy antiguos
+                if ($days_since_published <= 3) {
+                    $recency_boost = 3.0;  // Posts de últimos 3 días: 3x boost
+                } elseif ($days_since_published <= 7) {
+                    $recency_boost = 2.0;  // Posts de última semana: 2x boost
+                } elseif ($days_since_published <= 14) {
+                    $recency_boost = 1.5;  // Posts de últimas 2 semanas: 1.5x boost
+                } elseif ($days_since_published <= 30) {
+                    $recency_boost = 1.0;  // Posts del último mes: normal
+                } else {
+                    $recency_boost = 0.5;  // Posts +30 días: penalización 50%
+                }
+
+                // Calcular trending score combinando decay, total histórico, y boost por recencia
+                $base_score = ($post->decayed_score * $recent_weight) + ($views_total_historic * $total_weight);
+                $trending_score = $base_score * $recency_boost;
+
                 update_post_meta($post->post_id, 'wpb_trending_score', $trending_score);
+                update_post_meta($post->post_id, 'wpb_recency_boost', $recency_boost);
                 // Guardar stats por rangos (para GraphQL viewStats)
-                update_post_meta($post->post_id, 'wpb_views_1d', $post->views_1d);
-                update_post_meta($post->post_id, 'wpb_views_7d', $post->views_7d);
-                update_post_meta($post->post_id, 'wpb_views_30d', $post->views_30d);
-                update_post_meta($post->post_id, 'wpb_views_total', $post->views_total);
+                update_post_meta($post->post_id, 'wpb_views_1d', (int)$post->views_1d);
+                update_post_meta($post->post_id, 'wpb_views_7d', (int)$post->views_7d);
+                update_post_meta($post->post_id, 'wpb_views_30d', (int)$post->views_30d);
+                update_post_meta($post->post_id, 'wpb_views_total', $views_total_historic);
             }
             
-            // Limpiar datos antiguos
+            // Limpiar datos antiguos de la tabla de vistas diarias
             $retention_days = $this->get_setting('retention_days');
             $wpdb->query($wpdb->prepare(
                 "DELETE FROM $table_name WHERE view_date < DATE_SUB(CURDATE(), INTERVAL %d DAY)",
@@ -838,6 +877,27 @@ class WPB_Views_Counter_Pro {
             'type'    => 'Float',
             'resolve' => function($post) {
                 return (float) get_post_meta($post->databaseId, 'wpb_trending_score', true) ?: 0;
+            }
+        ));
+
+         register_graphql_object_type('ViewStats', array(
+            'fields' => array(
+                'views_1d' => array('type' => 'Int'),
+                'views_7d' => array('type' => 'Int'),
+                'views_30d' => array('type' => 'Int'),
+                'views_total' => array('type' => 'Int'),
+            ),
+        ));
+        
+        register_graphql_field('Post', 'viewStats', array(
+            'type' => 'ViewStats',
+            'resolve' => function($post) {
+                return array(
+                    'views_1d' => (int) get_post_meta($post->databaseId, 'wpb_views_1d', true) ?: 0,
+                    'views_7d' => (int) get_post_meta($post->databaseId, 'wpb_views_7d', true) ?: 0,
+                    'views_30d' => (int) get_post_meta($post->databaseId, 'wpb_views_30d', true) ?: 0,
+                    'views_total' => (int) get_post_meta($post->databaseId, 'wpb_views_total', true) ?: 0,
+                );
             }
         ));
         
