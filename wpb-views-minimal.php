@@ -822,16 +822,19 @@ class WPB_Views_Counter_Pro {
                 $days_since_published = $post_date ? 
                     floor((current_time('timestamp') - strtotime($post_date)) / 86400) : 999;
 
-                if ($days_since_published <= 2) {
-                    $recency_boost = 4.0;  // Posts de últimos 2 días: 4x boost (MUY reciente)
-                } elseif ($days_since_published <= 5) {
-                    $recency_boost = 2.5;  // Posts de 3-5 días: 2.5x boost
-                } elseif ($days_since_published <= 10) {
-                    $recency_boost = 1.5;  // Posts de 6-10 días: 1.5x boost
-                } elseif ($days_since_published <= 30) {
-                    $recency_boost = 1.0;  // Posts del último mes: normal
+                // Recency boost AGRESIVO para priorizar noticias del día
+                if ($days_since_published <= 1) {
+                    $recency_boost = 15.0;  // Posts de HOY: 15x boost (máxima prioridad)
+                } elseif ($days_since_published <= 2) {
+                    $recency_boost = 10.0;  // Posts de ayer: 10x boost  
+                } elseif ($days_since_published <= 3) {
+                    $recency_boost = 5.0;   // Posts de 2-3 días: 5x boost
+                } elseif ($days_since_published <= 7) {
+                    $recency_boost = 2.0;   // Posts de la semana: 2x boost
+                } elseif ($days_since_published <= 14) {
+                    $recency_boost = 1.0;   // Posts de 2 semanas: normal
                 } else {
-                    $recency_boost = 0.5;  // Posts +30 días: penalización 50%
+                    $recency_boost = 0.1;   // Posts +14 días: penalización 90%
                 }
 
                 // Calcular trending score combinando decay, total histórico, y boost por recencia
@@ -862,6 +865,121 @@ class WPB_Views_Counter_Pro {
         }
     }
     
+    /**
+     * Calcular trending score de un post individual en tiempo real
+     * Usado para posts recientes que aún no tienen score pre-calculado
+     */
+    private function calculate_post_trending_score($post_id) {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'post_views';
+        
+        // Obtener vistas con decay de los últimos 14 días
+        $decay_data = $wpdb->get_row($wpdb->prepare("
+            SELECT 
+                SUM(view_count * POW(0.6, DATEDIFF(CURDATE(), view_date))) as decayed_score
+            FROM $table_name
+            WHERE post_id = %d 
+            AND view_date >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
+        ", $post_id));
+        
+        $decayed_score = (float) ($decay_data->decayed_score ?? 0);
+        
+        if ($decayed_score == 0) {
+            return 0;
+        }
+        
+        // Obtener total histórico
+        $views_total = (int) get_post_meta($post_id, WPB_VIEWS_META_KEY, true) ?: 0;
+        
+        // Obtener fecha de publicación
+        $post_date = get_post_field('post_date', $post_id);
+        $days_since_published = $post_date ? 
+            floor((current_time('timestamp') - strtotime($post_date)) / 86400) : 999;
+        
+        // Aplicar recency boost MUY AGRESIVO para priorizar noticias del día
+        if ($days_since_published <= 1) {
+            $recency_boost = 15.0;  // Posts de HOY: 15x boost (máxima prioridad)
+        } elseif ($days_since_published <= 2) {
+            $recency_boost = 10.0;  // Posts de ayer: 10x boost
+        } elseif ($days_since_published <= 3) {
+            $recency_boost = 5.0;   // Posts de 2-3 días: 5x boost
+        } elseif ($days_since_published <= 7) {
+            $recency_boost = 2.0;   // Posts de la semana: 2x boost
+        } elseif ($days_since_published <= 14) {
+            $recency_boost = 1.0;   // Posts de 2 semanas: normal
+        } else {
+            $recency_boost = 0.1;   // Posts +14 días: penalización 90%
+        }
+        
+        // Calcular score final
+        $recent_weight = $this->get_setting('trending_weight');
+        $total_weight = 1 - $recent_weight;
+        $base_score = ($decayed_score * $recent_weight) + ($views_total * $total_weight);
+        
+        return $base_score * $recency_boost;
+    }
+    
+    /**
+     * Obtener posts candidatos para trending (híbrido)
+     * Combina posts recientes (últimos 3 días) con top pre-calculados
+     */
+    private function get_trending_candidates() {
+        global $wpdb;
+        
+        // Cache de 5 minutos
+        $cache_key = 'trending_candidates';
+        $cached = wp_cache_get($cache_key, 'wpb_views');
+        if ($cached !== false) {
+            return $cached;
+        }
+        
+        $table_name = $wpdb->prefix . 'post_views';
+        
+        // PRIORIDAD 1: Posts publicados en últimas 48 horas CON vistas
+        // Estos son los que DEBEN aparecer primero en el sidebar
+        $fresh_posts = $wpdb->get_col("
+            SELECT DISTINCT pv.post_id 
+            FROM $table_name pv
+            INNER JOIN {$wpdb->posts} p ON pv.post_id = p.ID
+            WHERE p.post_date >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
+            AND p.post_status = 'publish'
+            AND pv.view_date >= DATE_SUB(CURDATE(), INTERVAL 2 DAY)
+            ORDER BY pv.view_count DESC
+        ");
+        
+        // PRIORIDAD 2: Posts de últimos 7 días con vistas recientes
+        $recent_posts = $wpdb->get_col("
+            SELECT DISTINCT pv.post_id 
+            FROM $table_name pv
+            INNER JOIN {$wpdb->posts} p ON pv.post_id = p.ID
+            WHERE p.post_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+            AND p.post_status = 'publish'
+            AND pv.view_date >= DATE_SUB(CURDATE(), INTERVAL 3 DAY)
+        ");
+        
+        // PRIORIDAD 3: Top posts de últimos 14 días (NO más antiguos)
+        $precalculated_posts = $wpdb->get_col("
+            SELECT p.ID 
+            FROM {$wpdb->posts} p
+            INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+            WHERE pm.meta_key = 'wpb_trending_score'
+            AND p.post_status = 'publish'
+            AND p.post_date >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+            ORDER BY CAST(pm.meta_value AS DECIMAL(20,2)) DESC
+            LIMIT 30
+        ");
+        
+        // Combinar con prioridad: frescos primero, luego recientes, luego pre-calculados
+        $candidates = array_unique(array_merge($fresh_posts, $recent_posts, $precalculated_posts));
+        
+        // Limitar a 100 candidatos para no saturar
+        $candidates = array_slice($candidates, 0, 100);
+        
+        wp_cache_set($cache_key, $candidates, 'wpb_views', 300); // 5 min cache
+        
+        return $candidates;
+    }
+    
     public function register_graphql_types() {
         register_graphql_field('Post', 'viewCount', array(
             'type'    => 'Int',
@@ -873,7 +991,33 @@ class WPB_Views_Counter_Pro {
         register_graphql_field('Post', 'trendingScore', array(
             'type'    => 'Float',
             'resolve' => function($post) {
-                return (float) get_post_meta($post->databaseId, 'wpb_trending_score', true) ?: 0;
+                // Intentar obtener score pre-calculado (del cron)
+                $saved_score = (float) get_post_meta($post->databaseId, 'wpb_trending_score', true);
+                
+                // Si tiene score guardado y no es muy reciente, usarlo
+                $post_date = get_post_field('post_date', $post->databaseId);
+                $days_old = $post_date ? floor((current_time('timestamp') - strtotime($post_date)) / 86400) : 999;
+                
+                // Posts de más de 3 días: usar score guardado (más eficiente)
+                if ($days_old > 3 && $saved_score > 0) {
+                    return $saved_score;
+                }
+                
+                // Posts recientes (0-3 días): calcular on-demand con caché
+                $cache_key = 'trending_' . $post->databaseId;
+                $cached = wp_cache_get($cache_key, 'wpb_views');
+                
+                if ($cached !== false) {
+                    return (float) $cached;
+                }
+                
+                // Calcular score en tiempo real
+                $score = $this->calculate_post_trending_score($post->databaseId);
+                
+                // Cachear por 30 minutos
+                wp_cache_set($cache_key, $score, 'wpb_views', 1800);
+                
+                return $score;
             }
         ));
 
@@ -920,10 +1064,62 @@ class WPB_Views_Counter_Pro {
             'connectionTypeName' => 'RootQueryToTrendingPostsConnection',
             'connectionArgs'     => \WPGraphQL\Connection\PostObjects::get_connection_args(),
             'resolve'            => function($root, $args, $context, $info) {
+                // Obtener posts candidatos (híbrido: recientes + pre-calculados)
+                $candidate_posts = $this->get_trending_candidates();
+                
+                if (empty($candidate_posts)) {
+                    // Fallback a query tradicional si falla
+                    $resolver = new \WPGraphQL\Data\Connection\PostObjectConnectionResolver($root, $args, $context, $info);
+                    $resolver->set_query_arg('meta_key', 'wpb_trending_score');
+                    $resolver->set_query_arg('orderby', 'meta_value_num');
+                    $resolver->set_query_arg('order', 'DESC');
+                    return $resolver->get_connection();
+                }
+                
+                // Calcular scores: SIEMPRE recalcular para posts de última semana
+                // Posts más viejos usan score pre-calculado (eficiencia)
+                $scored_posts = array();
+                foreach ($candidate_posts as $post_id) {
+                    $post_date = get_post_field('post_date', $post_id);
+                    $days_old = floor((current_time('timestamp') - strtotime($post_date)) / 86400);
+                    
+                    // Posts de última semana: SIEMPRE calcular on-demand (frescura)
+                    if ($days_old <= 7) {
+                        $score = $this->calculate_post_trending_score($post_id);
+                        if ($score > 0) {
+                            $scored_posts[$post_id] = $score;
+                        }
+                        continue;
+                    }
+                    
+                    // Posts de 8-14 días: usar score guardado si existe
+                    $saved_score = (float) get_post_meta($post_id, 'wpb_trending_score', true);
+                    if ($saved_score > 0) {
+                        $scored_posts[$post_id] = $saved_score;
+                    } else {
+                        // Si no tiene score guardado, calcular
+                        $score = $this->calculate_post_trending_score($post_id);
+                        if ($score > 0) {
+                            $scored_posts[$post_id] = $score;
+                        }
+                    }
+                }
+                
+                // Ordenar por score descendente
+                arsort($scored_posts);
+                $post_ids = array_keys($scored_posts);
+                
+                if (empty($post_ids)) {
+                    // Si no hay resultados, retornar vacío
+                    $resolver = new \WPGraphQL\Data\Connection\PostObjectConnectionResolver($root, $args, $context, $info);
+                    $resolver->set_query_arg('post__in', array(0));
+                    return $resolver->get_connection();
+                }
+                
+                // Resolver conexión con posts ordenados
                 $resolver = new \WPGraphQL\Data\Connection\PostObjectConnectionResolver($root, $args, $context, $info);
-                $resolver->set_query_arg('meta_key', 'wpb_trending_score');
-                $resolver->set_query_arg('orderby', 'meta_value_num');
-                $resolver->set_query_arg('order', 'DESC');
+                $resolver->set_query_arg('post__in', $post_ids);
+                $resolver->set_query_arg('orderby', 'post__in');
                 return $resolver->get_connection();
             }
         ));
