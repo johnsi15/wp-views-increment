@@ -787,7 +787,7 @@ class WPB_Views_Counter_Pro {
             );
             $this->log("Cleaned ALL old trending data: $deleted rows deleted");
             
-            // PASO 2: Calcular nuevos scores SOLO para posts con actividad en los últimos 30 días
+            // PASO 2: Calcular nuevos scores SOLO para posts con actividad en los últimos 14 días
             $posts = $wpdb->get_results("
                 SELECT 
                     post_id,
@@ -797,7 +797,7 @@ class WPB_Views_Counter_Pro {
                     SUM(view_count) as views_in_table,
                     SUM(view_count * POW(0.7, DATEDIFF(CURDATE(), view_date))) as decayed_score
                 FROM $table_name
-                WHERE view_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                WHERE view_date >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
                 GROUP BY post_id
                 HAVING views_in_table > 0
                 ORDER BY decayed_score DESC
@@ -822,15 +822,12 @@ class WPB_Views_Counter_Pro {
                 $days_since_published = $post_date ? 
                     floor((current_time('timestamp') - strtotime($post_date)) / 86400) : 999;
 
-                // Boost por recencia de publicación
-                // Posts nuevos tienen FUERTE ventaja sobre posts "evergreen"
-                // Penalización para posts muy antiguos
-                if ($days_since_published <= 3) {
-                    $recency_boost = 3.0;  // Posts de últimos 3 días: 3x boost
-                } elseif ($days_since_published <= 7) {
-                    $recency_boost = 2.0;  // Posts de última semana: 2x boost
-                } elseif ($days_since_published <= 14) {
-                    $recency_boost = 1.5;  // Posts de últimas 2 semanas: 1.5x boost
+                if ($days_since_published <= 2) {
+                    $recency_boost = 4.0;  // Posts de últimos 2 días: 4x boost (MUY reciente)
+                } elseif ($days_since_published <= 5) {
+                    $recency_boost = 2.5;  // Posts de 3-5 días: 2.5x boost
+                } elseif ($days_since_published <= 10) {
+                    $recency_boost = 1.5;  // Posts de 6-10 días: 1.5x boost
                 } elseif ($days_since_published <= 30) {
                     $recency_boost = 1.0;  // Posts del último mes: normal
                 } else {
