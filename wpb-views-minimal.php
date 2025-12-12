@@ -824,7 +824,7 @@ class WPB_Views_Counter_Pro {
 
                 // Recency boost AGRESIVO para priorizar noticias del día
                 if ($days_since_published <= 1) {
-                    $recency_boost = 15.0;  // Posts de HOY: 15x boost (máxima prioridad)
+                    $recency_boost = 50.0;  // Posts de HOY: 50x boost (máxima prioridad)
                 } elseif ($days_since_published <= 2) {
                     $recency_boost = 10.0;  // Posts de ayer: 10x boost  
                 } elseif ($days_since_published <= 3) {
@@ -873,6 +873,11 @@ class WPB_Views_Counter_Pro {
         global $wpdb;
         $table_name = $wpdb->prefix . 'post_views';
         
+        // Obtener fecha de publicación primero
+        $post_date = get_post_field('post_date', $post_id);
+        $days_since_published = $post_date ? 
+            floor((current_time('timestamp') - strtotime($post_date)) / 86400) : 999;
+        
         // Obtener vistas con decay de los últimos 14 días
         $decay_data = $wpdb->get_row($wpdb->prepare("
             SELECT 
@@ -884,21 +889,20 @@ class WPB_Views_Counter_Pro {
         
         $decayed_score = (float) ($decay_data->decayed_score ?? 0);
         
-        if ($decayed_score == 0) {
-            return 0;
-        }
-        
         // Obtener total histórico
         $views_total = (int) get_post_meta($post_id, WPB_VIEWS_META_KEY, true) ?: 0;
         
-        // Obtener fecha de publicación
-        $post_date = get_post_field('post_date', $post_id);
-        $days_since_published = $post_date ? 
-            floor((current_time('timestamp') - strtotime($post_date)) / 86400) : 999;
+        // IMPORTANTE: Posts de HOY sin vistas aún en la tabla
+        // Les damos un score base para que aparezcan en trending
+        if ($decayed_score == 0 && $days_since_published <= 1) {
+            $decayed_score = 50;
+        } elseif ($decayed_score == 0) {
+            return 0;
+        }
         
         // Aplicar recency boost MUY AGRESIVO para priorizar noticias del día
         if ($days_since_published <= 1) {
-            $recency_boost = 15.0;  // Posts de HOY: 15x boost (máxima prioridad)
+            $recency_boost = 50.0;  // Posts de HOY: 50x boost (máxima prioridad)
         } elseif ($days_since_published <= 2) {
             $recency_boost = 10.0;  // Posts de ayer: 10x boost
         } elseif ($days_since_published <= 3) {
@@ -935,8 +939,19 @@ class WPB_Views_Counter_Pro {
         
         $table_name = $wpdb->prefix . 'post_views';
         
+        // PRIORIDAD 0: Posts publicados HOY (aunque no tengan vistas aún)
+        // Esto garantiza que noticias recién publicadas aparezcan inmediatamente
+        $today_posts = $wpdb->get_col("
+            SELECT ID 
+            FROM {$wpdb->posts}
+            WHERE post_date >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+            AND post_status = 'publish'
+            AND post_type = 'post'
+            ORDER BY post_date DESC
+            LIMIT 30
+        ");
+        
         // PRIORIDAD 1: Posts publicados en últimas 48 horas CON vistas
-        // Estos son los que DEBEN aparecer primero en el sidebar
         $fresh_posts = $wpdb->get_col("
             SELECT DISTINCT pv.post_id 
             FROM $table_name pv
@@ -969,8 +984,8 @@ class WPB_Views_Counter_Pro {
             LIMIT 30
         ");
         
-        // Combinar con prioridad: frescos primero, luego recientes, luego pre-calculados
-        $candidates = array_unique(array_merge($fresh_posts, $recent_posts, $precalculated_posts));
+        // Combinar: posts de hoy primero, luego frescos con vistas, luego recientes, luego pre-calculados
+        $candidates = array_unique(array_merge($today_posts, $fresh_posts, $recent_posts, $precalculated_posts));
         
         // Limitar a 100 candidatos para no saturar
         $candidates = array_slice($candidates, 0, 100);
@@ -1033,11 +1048,47 @@ class WPB_Views_Counter_Pro {
         register_graphql_field('Post', 'viewStats', array(
             'type' => 'ViewStats',
             'resolve' => function($post) {
+                global $wpdb;
+                
+                // 1. Obtener datos guardados (del cron)
+                $views_1d = (int) get_post_meta($post->databaseId, 'wpb_views_1d', true);
+                $views_7d = (int) get_post_meta($post->databaseId, 'wpb_views_7d', true);
+                $views_30d = (int) get_post_meta($post->databaseId, 'wpb_views_30d', true);
+                $views_total = (int) get_post_meta($post->databaseId, 'wpb_views_total', true);
+                
+                // 2. Si es un post RECIENTE (< 7 días) y views_1d es 0, calcular en tiempo real
+                // Esto arregla el problema de noticias nuevas mostrando "0 views" antes del cron
+                $post_date = get_post_field('post_date', $post->databaseId);
+                $days_old = $post_date ? floor((current_time('timestamp') - strtotime($post_date)) / 86400) : 999;
+                
+                if ($days_old <= 7 && $views_1d == 0) {
+                    $table_name = $wpdb->prefix . 'post_views';
+                    $stats = $wpdb->get_row($wpdb->prepare("
+                        SELECT 
+                            SUM(CASE WHEN view_date >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) THEN view_count ELSE 0 END) as views_1d,
+                            SUM(CASE WHEN view_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN view_count ELSE 0 END) as views_7d,
+                            SUM(CASE WHEN view_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN view_count ELSE 0 END) as views_30d
+                        FROM $table_name
+                        WHERE post_id = %d
+                    ", $post->databaseId));
+                    
+                    if ($stats) {
+                        $views_1d = (int) $stats->views_1d;
+                        $views_7d = (int) $stats->views_7d;
+                        $views_30d = (int) $stats->views_30d;
+                    }
+                }
+
+                // Fallback para total si es 0
+                if ($views_total == 0) {
+                    $views_total = (int) get_post_meta($post->databaseId, WPB_VIEWS_META_KEY, true) ?: 0;
+                }
+
                 return array(
-                    'views_1d' => (int) get_post_meta($post->databaseId, 'wpb_views_1d', true) ?: 0,
-                    'views_7d' => (int) get_post_meta($post->databaseId, 'wpb_views_7d', true) ?: 0,
-                    'views_30d' => (int) get_post_meta($post->databaseId, 'wpb_views_30d', true) ?: 0,
-                    'views_total' => (int) get_post_meta($post->databaseId, 'wpb_views_total', true) ?: 0,
+                    'views_1d' => $views_1d,
+                    'views_7d' => $views_7d,
+                    'views_30d' => $views_30d,
+                    'views_total' => $views_total,
                 );
             }
         ));
